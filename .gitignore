@@ -7,3 +7,6 @@ node_modules
 /playwright/.cache/
 /playwright/.auth/ 
 .env
+
+# 크롤러 실행 결과물 (실행할 때마다 새로 생성됨, 소스 아님)
+crawl-report.json
