@@ -5,31 +5,13 @@ require('dotenv').config();
 const fs = require('fs');
 const { chromium } = require('@playwright/test');
 const { auditPage } = require('./pageAuditor');
+const { extractInternalLinks } = require('./linkUtils');
 
 const entryUrl = 'https://the-internet.herokuapp.com/';
 const siteHost = new URL(entryUrl).hostname;
 const MAX_PAGES = 10;          // 한 번 크롤링에서 점검할 최대 페이지 수 (비용/시간 제한)
 const MAX_STEPS_PER_PAGE = 30; // 페이지 한 장당 허용할 최대 step 수 (15는 부족해서 finish 호출 전에 예산 소진됨)
 const REPORT_PATH = 'crawl-report.json';
-
-function extractInternalLinks(hrefs, baseUrl) {
-  const links = new Set();
-  for (const href of hrefs) {
-    if (!href) continue;
-    const trimmed = href.trim();
-    if (trimmed === '' || trimmed.startsWith('#') || /^(mailto|tel|javascript):/i.test(trimmed)) continue;
-    let abs;
-    try {
-      abs = new URL(trimmed, baseUrl);
-    } catch {
-      continue;
-    }
-    if (abs.hostname !== siteHost) continue; // 외부 도메인은 크롤링 대상에서 제외 (agent가 클릭해서 검증만 함)
-    abs.hash = '';
-    links.add(abs.toString());
-  }
-  return links;
-}
 
 (async () => {
   const browser = await chromium.launch({ headless: false });
@@ -62,7 +44,7 @@ function extractInternalLinks(hrefs, baseUrl) {
 
       // 이번 페이지에서 발견한 내부 링크를 큐에 추가 (이미 방문했거나 큐에 있으면 건너뜀)
       const hrefs = await page.$$eval('a[href]', els => els.map(e => e.getAttribute('href'))).catch(() => []);
-      for (const link of extractInternalLinks(hrefs, url)) {
+      for (const link of extractInternalLinks(hrefs, url, siteHost)) {
         if (!visited.has(link) && !queue.includes(link)) queue.push(link);
       }
     }

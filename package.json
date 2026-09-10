@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
-  "scripts": {},
+  "scripts": {
+    "test:unit": "playwright test tests/unit"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/junparka-dotcom/web-test-agent.git"

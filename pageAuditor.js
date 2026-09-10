@@ -4,7 +4,13 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const readline = require('readline');
 
-const anthropic = new Anthropic();
+// API 키가 없으면 new Anthropic()이 즉시 예외를 던지는데, 이 모듈을 그냥 require만 해도
+// (예: 순수 로직 유닛 테스트에서) 실행되면 안 되므로 실제로 API를 호출하는 시점까지 생성을 미룬다.
+let _anthropic = null;
+function getAnthropic() {
+  if (!_anthropic) _anthropic = new Anthropic();
+  return _anthropic;
+}
 
 function waitForUser(message) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -170,7 +176,7 @@ async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
 
     outer:
     for (let step = 1; step <= maxSteps; step++) {
-      const response = await anthropic.messages.create({
+      const response = await getAnthropic().messages.create({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 1000,
         tools,
@@ -328,4 +334,4 @@ async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
   }
 }
 
-module.exports = { auditPage, isLogoutRef, gotoWithRetry, tools, goal };
+module.exports = { auditPage, isLogoutRef, gotoWithRetry, ensureReachable, formatFindings, tools, goal };
