@@ -42,9 +42,12 @@ const REPORT_PATH = 'crawl-report.json';
       }
       report.push({ url, findings: result.findings, summary: result.summary });
 
-      // 이번 페이지에서 발견한 내부 링크를 큐에 추가 (이미 방문했거나 큐에 있으면 건너뜀)
+      // 이번 페이지에서 발견한 내부 링크를 큐에 추가 (이미 방문했거나 큐에 있으면 건너뜀).
+      // <a href> 정적 스캔 + auditPage가 실제로 클릭해보다가 발견한 링크(SPA의 onClick 라우팅처럼
+      // href가 없는 경우도 포함) 둘 다 합친다.
       const hrefs = await page.$$eval('a[href]', els => els.map(e => e.getAttribute('href'))).catch(() => []);
-      for (const link of extractInternalLinks(hrefs, url, siteHost)) {
+      const candidateLinks = new Set([...extractInternalLinks(hrefs, url, siteHost), ...result.discoveredLinks]);
+      for (const link of candidateLinks) {
         if (!visited.has(link) && !queue.includes(link)) queue.push(link);
       }
     }

@@ -173,6 +173,10 @@ async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
       { role: 'user', content: `현재 페이지 접근성 트리:\n${currentSnapshot}\n\n임무: ${goal}` }
     ];
     const findings = [];
+    // 클릭으로 실제 이동해본 같은 사이트의 URL을 모아둔다. <a href>가 없는 SPA 라우팅(예: onClick으로
+    // history.pushState 하는 버튼)은 정적으로 링크를 긁어서는 못 찾지만, AI가 그 버튼을 눌러보는 순간
+    // page.url()이 바뀌는 건 감지되므로 여기서 같이 주워서 crawler.js가 큐에 넣을 수 있게 돌려준다.
+    const discoveredLinks = new Set();
 
     outer:
     for (let step = 1; step <= maxSteps; step++) {
@@ -265,6 +269,11 @@ async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
             // 원래 점검 중이던 페이지로 되돌아온다. 그래야 이 페이지에서 발견되는 링크 목록과 남은 step이
             // 엉뚱한 페이지 것으로 섞이지 않는다 (사이트 전체 탐색은 crawler.js가 별도로 담당).
             const movedToUrl = page.url();
+            if (new URL(movedToUrl).hostname === siteHost) {
+              const normalized = new URL(movedToUrl);
+              normalized.hash = '';
+              discoveredLinks.add(normalized.toString());
+            }
             await page.goto(startUrl);
             resultText = `${movedToUrl} 로 이동됨을 확인 → 정상 작동, 원래 페이지로 복귀함`;
 
@@ -311,7 +320,7 @@ async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
           console.log('\n✅ 점검 종료 요약 (로그아웃 감지로 코드가 자동 종료):\n', finishSummary);
         }
         console.log('🔒 종료 조건 도달');
-        return { findings, summary: finishSummary, finalUrl: page.url() };
+        return { findings, summary: finishSummary, finalUrl: page.url(), discoveredLinks: [...discoveredLinks] };
       }
 
       currentSnapshot = await page.ariaSnapshot({ mode: 'ai' });
@@ -325,7 +334,7 @@ async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
     const fallbackSummary = findings.length > 0
       ? `(step 예산 소진 — finish 호출 전 중단됨)\n${formatFindings(findings)}`
       : null;
-    return { findings, summary: fallbackSummary, finalUrl: page.url() };
+    return { findings, summary: fallbackSummary, finalUrl: page.url(), discoveredLinks: [...discoveredLinks] };
   } finally {
     // page 객체가 crawler.js에서 여러 페이지에 걸쳐 재사용되므로, 리스너/헤더를 여기서 정리하지 않으면
     // 다음 페이지 점검 때 dialog 리스너가 계속 쌓이거나 Basic Auth 자격증명이 새어나간다.

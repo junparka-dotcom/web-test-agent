@@ -57,6 +57,12 @@ AI 기반 웹/앱 개발환경 프로젝트의 차별화 기능 실험. 코드�
   try/catch로 감싼다. 이전 페이지의 실패한 goto가 남긴 상태 때문에 바로 다음 페이지의 goto가 연쇄적으로
   "다른 내비게이션에 의해 중단됨" 에러를 내는 경우가 있었는데, 이건 크롤러가 아니라 `pageAuditor.js`의
   `gotoWithRetry()`가 그 에러 패턴에 한해 재시도로 흡수한다.
+- **내부 링크 발견은 정적 스캔 + 실제 클릭 둘 다 필요**: `<a href>`만 긁으면 React 같은 SPA에서 흔한,
+  href 없이 `onClick`으로 `history.pushState`/라우터를 호출하는 네비게이션은 놓친다. 그런데 AI가 그런
+  버튼을 눌러서 점검하는 순간 `page.url()`이 바뀌는 건 이미 감지하고 있었으므로(원래 페이지로 복귀하는
+  로직), 그 시점에 발견한 URL을 `auditPage`가 `discoveredLinks`로 같이 반환하고 `crawler.js`가
+  정적 스캔 결과와 합쳐서 큐에 넣는다. 단, 그 페이지에서 AI가 실제로 클릭해본 요소에 한해서만 발견되므로
+  (규칙 4의 효율화로 일부 요소를 건너뛸 수 있음) 정적 `<a href>` 스캔을 대체하지 않고 보완하는 용도다.
 - **API를 직접 호출하는 코드와 순수 로직은 분리해서, 순수 로직만 API 키 없이 테스트 가능해야 함**:
   `pageAuditor.js`가 모듈 로드 시점에 `new Anthropic()`을 실행하면, API 키가 없는 환경에서는
   `require`만 해도 죽어버려서 `isLogoutRef`/`formatFindings`/`gotoWithRetry` 같은 순수 함수조차
@@ -89,13 +95,11 @@ AI 기반 웹/앱 개발환경 프로젝트의 차별화 기능 실험. 코드�
 - 드롭다운(select_option), 호버(hover_element), 드래그앤드롭(drag_element), 파일 업로드(upload_file),
   브라우저 대화상자(alert/confirm/prompt) 자동 처리 지원
 - HTTP Basic Auth 벽 처리 (사람에게 직접 자격증명 입력받음)
-- 크롤러 레이어 (`crawler.js`) — 내부 링크 큐잉, 페이지 단위 실패 격리, goto 재시도
+- 크롤러 레이어 (`crawler.js`) — 내부 링크 큐잉(정적 `<a href>` 스캔 + 클릭으로 발견한 SPA 라우팅 링크),
+  페이지 단위 실패 격리, goto 재시도
 - API 호출 없는 순수 로직 유닛 테스트 (`tests/unit/`, 18개)
 
 **남은 것**
-- **SPA/JS 기반 라우팅 대응**: `linkUtils.js`의 `extractInternalLinks`는 `<a href>`만 인식한다.
-  최종 목표인 "AI가 만든 임의의 웹 페이지"는 React 등 SPA로, `<a>` 없이 JS로 라우팅하는 경우가 흔할 텐데
-  아직 대응 안 돼 있음 (the-internet은 전통적인 `<a href>` 사이트라 지금까진 안 드러난 한계).
 - URL 정규화 (trailing slash, 쿼리스트링 차이로 같은 페이지가 큐에 중복 등록될 수 있음)
 - **라이브 통합 실행 검증**: Basic Auth 입력 흐름, dialog 처리, hover/drag/upload를 실제 API로 한 번에
   돌려서 확인하는 작업이 아직 안 됨 — API 크레딧 비용 때문에 개발이 더 진행된 뒤 한 번에 확인하기로 함.
