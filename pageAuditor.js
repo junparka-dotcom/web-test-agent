@@ -77,6 +77,21 @@ const tools = [
     input_schema: { type: 'object', properties: { ref: { type: 'string' }, option: { type: 'string' } }, required: ['ref', 'option'] }
   },
   {
+    name: 'hover_element',
+    description: '주어진 ref를 가진 요소 위에 마우스를 올려(hover) 반응(툴팁, 드롭다운 메뉴 등)을 확인한다',
+    input_schema: { type: 'object', properties: { ref: { type: 'string' } }, required: ['ref'] }
+  },
+  {
+    name: 'drag_element',
+    description: 'from_ref 요소를 to_ref 요소 위로 드래그 앤 드롭한다',
+    input_schema: { type: 'object', properties: { from_ref: { type: 'string' }, to_ref: { type: 'string' } }, required: ['from_ref', 'to_ref'] }
+  },
+  {
+    name: 'upload_file',
+    description: '<input type="file"> 요소에 QA 점검용 더미 텍스트 파일을 업로드한다',
+    input_schema: { type: 'object', properties: { ref: { type: 'string' } }, required: ['ref'] }
+  },
+  {
     name: 'request_human_help',
     description: '로그인, 인증, 결제, CAPTCHA 등 스스로 넘을 수 없는 보안/권한 장벽을 만났을 때 호출한다.',
     input_schema: { type: 'object', properties: { blocker: { type: 'string' }, request: { type: 'string' } }, required: ['blocker', 'request'] }
@@ -113,7 +128,16 @@ const goal = `이 페이지의 상호작용 요소(버튼, 링크, 폼, 애니�
 규칙 5: 드롭다운(<select>)은 fill_element로 채우지 말고 반드시 select_option을 사용해라.
 
 규칙 6: 어떤 행동이 실패하면(다음 턴에 "실행 실패: ..."로 알려줌) 같은 방법을 반복하지 말고
-다른 방식으로 다시 시도하거나, 그 요소를 report_finding으로 status: issue와 실패 사유를 기록하고 다음 요소로 넘어가라.`;
+다른 방식으로 다시 시도하거나, 그 요소를 report_finding으로 status: issue와 실패 사유를 기록하고 다음 요소로 넘어가라.
+
+규칙 7: 클릭했을 때 브라우저 경고창(alert/confirm/prompt)이 떠도 걱정하지 마라 —
+시스템이 자동으로 확인 처리하고 내용을 다음 턴에 알려준다.
+
+규칙 8: 마우스를 올려야 반응하는 요소(툴팁, 호버 메뉴 등)는 hover_element로 확인해라.
+
+규칙 9: 드래그로 옮기는 요소는 drag_element(from_ref, to_ref)로 확인해라.
+
+규칙 10: 파일 업로드(<input type="file">) 요소는 upload_file로 확인해라.`;
 
 function formatFindings(findings) {
   return findings.map(f => `${f.status === 'ok' ? '✓' : '✗'} ${f.target}: ${f.detail}`).join('\n');
@@ -125,6 +149,15 @@ function formatFindings(findings) {
 // maxSteps: 이 페이지 하나에 허용할 최대 step 수
 async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
   const usedBasicAuth = await ensureReachable(page, url);
+
+  // alert/confirm/prompt는 리스너 없이 두면 Playwright가 조용히 자동 취소해버려서 AI가 대화상자가
+  // 떴는지조차 모르게 된다. 항상 "확인"으로 자동 처리하고, 무엇을 봤는지는 다음 턴에 알려준다.
+  let lastDialogInfo = null;
+  const onDialog = async (dialog) => {
+    lastDialogInfo = { type: dialog.type(), message: dialog.message() };
+    await dialog.accept().catch(() => {});
+  };
+  page.on('dialog', onDialog);
 
   try {
     const startUrl = page.url(); // page.goto가 리다이렉트할 수 있어서, 이후 "원래 페이지로 복귀" 기준은 실제 로드된 URL로 고정
@@ -169,6 +202,23 @@ async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
         } else if (toolUse.name === 'select_option') {
           await page.locator(`aria-ref=${toolUse.input.ref}`).selectOption({ label: toolUse.input.option });
           resultText = `옵션 "${toolUse.input.option}" 선택 완료`;
+
+        } else if (toolUse.name === 'hover_element') {
+          await page.locator(`aria-ref=${toolUse.input.ref}`).hover();
+          await page.waitForTimeout(300);
+          resultText = '호버 완료';
+
+        } else if (toolUse.name === 'drag_element') {
+          await page.locator(`aria-ref=${toolUse.input.from_ref}`).dragTo(page.locator(`aria-ref=${toolUse.input.to_ref}`));
+          resultText = '드래그 앤 드롭 완료';
+
+        } else if (toolUse.name === 'upload_file') {
+          await page.locator(`aria-ref=${toolUse.input.ref}`).setInputFiles({
+            name: 'qa-test-upload.txt',
+            mimeType: 'text/plain',
+            buffer: Buffer.from('QA 점검용 테스트 파일')
+          });
+          resultText = '테스트 파일 업로드 완료';
 
         } else if (toolUse.name === 'click_element') {
           const popupPromise = page.context().waitForEvent('page', { timeout: 2000 }).catch(() => null);
@@ -239,6 +289,11 @@ async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
           console.log(`  ⚠️ ${resultText}`);
         }
 
+        if (lastDialogInfo) {
+          resultText += ` (브라우저 대화상자 "${lastDialogInfo.type}" 감지: "${lastDialogInfo.message}" → 자동으로 확인 처리함)`;
+          lastDialogInfo = null;
+        }
+
         toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: resultText });
       }
 
@@ -266,8 +321,9 @@ async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
       : null;
     return { findings, summary: fallbackSummary, finalUrl: page.url() };
   } finally {
-    // Basic Auth 헤더는 이 페이지에만 필요한 것이므로, 다른 페이지(특히 외부 사이트)로
-    // 새어나가지 않도록 점검이 끝나면 항상 정리한다.
+    // page 객체가 crawler.js에서 여러 페이지에 걸쳐 재사용되므로, 리스너/헤더를 여기서 정리하지 않으면
+    // 다음 페이지 점검 때 dialog 리스너가 계속 쌓이거나 Basic Auth 자격증명이 새어나간다.
+    page.off('dialog', onDialog);
     if (usedBasicAuth) await page.setExtraHTTPHeaders({}).catch(() => {});
   }
 }
