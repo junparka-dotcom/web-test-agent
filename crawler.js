@@ -9,7 +9,7 @@ const { auditPage } = require('./pageAuditor');
 const entryUrl = 'https://the-internet.herokuapp.com/';
 const siteHost = new URL(entryUrl).hostname;
 const MAX_PAGES = 5;          // 한 번 크롤링에서 점검할 최대 페이지 수 (비용/시간 제한)
-const MAX_STEPS_PER_PAGE = 15; // 페이지 한 장당 허용할 최대 step 수
+const MAX_STEPS_PER_PAGE = 30; // 페이지 한 장당 허용할 최대 step 수 (15는 부족해서 finish 호출 전에 예산 소진됨)
 const REPORT_PATH = 'crawl-report.json';
 
 function extractInternalLinks(hrefs, baseUrl) {
@@ -49,6 +49,7 @@ function extractInternalLinks(hrefs, baseUrl) {
 
       // 기본 인증(HTTP Basic Auth) 벽, DNS 오류, 타임아웃 등 page.goto 자체가 실패하는
       // 페이지가 섞여 있어도 크롤러 전체가 죽지 않도록 페이지 단위로 실패를 격리한다.
+      // (연쇄적인 "다른 내비게이션에 의해 중단됨" 에러는 pageAuditor.js의 gotoWithRetry가 재시도로 흡수한다.)
       let result;
       try {
         result = await auditPage({ page, url, siteHost, maxSteps: MAX_STEPS_PER_PAGE });
