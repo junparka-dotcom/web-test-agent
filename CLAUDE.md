@@ -63,12 +63,14 @@ AI 기반 웹/앱 개발환경 프로젝트의 차별화 기능 실험. 코드�
   로직), 그 시점에 발견한 URL을 `auditPage`가 `discoveredLinks`로 같이 반환하고 `crawler.js`가
   정적 스캔 결과와 합쳐서 큐에 넣는다. 단, 그 페이지에서 AI가 실제로 클릭해본 요소에 한해서만 발견되므로
   (규칙 4의 효율화로 일부 요소를 건너뛸 수 있음) 정적 `<a href>` 스캔을 대체하지 않고 보완하는 용도다.
-- **URL 정규화로 큐 중복 방지**: `/page`와 `/page/`(trailing slash), `?a=1&b=2`와 `?b=2&a=1`(쿼리
-  순서)처럼 사실상 같은 페이지가 다른 문자열이라는 이유로 크롤러 큐에 중복으로 들어갈 수 있었다.
-  `linkUtils.js`의 `normalizeUrl()`이 해시 제거 + trailing slash 제거(루트 `/`는 제외) + 쿼리 파라미터
-  정렬을 해주고, 정적 스캔(`extractInternalLinks`)과 클릭으로 발견한 링크(`discoveredLinks`), 크롤러의
-  시작 URL 모두 이 함수를 거쳐서 큐/visited 집합에 들어간다. 정규화된 URL로 그냥 navigate해도, the-internet
-  같은 사이트는 trailing slash 유무를 서로 리다이렉트해주므로 실제 로드되는 페이지는 동일하다.
+- **URL 정규화는 "비교 키"로만 쓰고, 실제 navigate에는 절대 쓰면 안 됨**: `/page`와 `/page/`(trailing
+  slash), `?a=1&b=2`와 `?b=2&a=1`(쿼리 순서)처럼 사실상 같은 페이지가 다른 문자열이라는 이유로 크롤러
+  큐에 중복으로 들어갈 수 있어서 `linkUtils.js`에 `normalizeUrl()`을 만들었는데, 처음엔 이 정규화된
+  값을 그대로 navigate에도 써버렸다가 실제 라이브 테스트에서 버그로 드러남:
+  the-internet.herokuapp.com/add_remove_elements/는 trailing slash가 없으면 404가 난다(사이트가
+  양쪽을 리다이렉트해줄 거라는 가정이 틀렸음). 그래서 지금은 `extractInternalLinks`/`discoveredLinks`가
+  돌려주는 원본 URL(해시만 제거, slash는 그대로)로 항상 navigate하고, `crawler.js`의 `enqueue()`가
+  `normalizeUrl()`을 큐 중복 판정용 키로만 사용해서 `seenKeys` Set에 저장한다 — 큐 자체에는 원본이 들어감.
 - **API를 직접 호출하는 코드와 순수 로직은 분리해서, 순수 로직만 API 키 없이 테스트 가능해야 함**:
   `pageAuditor.js`가 모듈 로드 시점에 `new Anthropic()`을 실행하면, API 키가 없는 환경에서는
   `require`만 해도 죽어버려서 `isLogoutRef`/`formatFindings`/`gotoWithRetry` 같은 순수 함수조차

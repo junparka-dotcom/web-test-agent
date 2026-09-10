@@ -7,7 +7,7 @@ const { chromium } = require('@playwright/test');
 const { auditPage } = require('./pageAuditor');
 const { extractInternalLinks, normalizeUrl } = require('./linkUtils');
 
-const entryUrl = normalizeUrl('https://the-internet.herokuapp.com/');
+const entryUrl = 'https://the-internet.herokuapp.com/';
 const siteHost = new URL(entryUrl).hostname;
 const MAX_PAGES = 10;          // 한 번 크롤링에서 점검할 최대 페이지 수 (비용/시간 제한)
 const MAX_STEPS_PER_PAGE = 30; // 페이지 한 장당 허용할 최대 step 수 (15는 부족해서 finish 호출 전에 예산 소진됨)
@@ -17,17 +17,27 @@ const REPORT_PATH = 'crawl-report.json';
   const browser = await chromium.launch({ headless: false });
   const page = await browser.newPage();
 
-  const visited = new Set();
-  const queue = [entryUrl];
+  // seenKeys는 normalizeUrl() 기준 "같은 페이지로 볼지" 비교용 키만 저장한다 — 큐에는 항상 원본 URL을
+  // 넣어서 navigate한다 (trailing slash가 있어야만 200이 나오는 페이지가 실제로 있었기 때문).
+  const seenKeys = new Set();
+  const queue = [];
+  function enqueue(url) {
+    const key = normalizeUrl(url);
+    if (seenKeys.has(key)) return;
+    seenKeys.add(key);
+    queue.push(url);
+  }
+  enqueue(entryUrl);
+
+  let visitedCount = 0;
   const report = [];
 
   try {
-    while (queue.length > 0 && visited.size < MAX_PAGES) {
+    while (queue.length > 0 && visitedCount < MAX_PAGES) {
       const url = queue.shift();
-      if (visited.has(url)) continue;
-      visited.add(url);
+      visitedCount++;
 
-      console.log(`\n===== [${visited.size}/${MAX_PAGES}] 페이지 점검 시작: ${url} =====`);
+      console.log(`\n===== [${visitedCount}/${MAX_PAGES}] 페이지 점검 시작: ${url} =====`);
 
       // 기본 인증(HTTP Basic Auth) 벽, DNS 오류, 타임아웃 등 page.goto 자체가 실패하는
       // 페이지가 섞여 있어도 크롤러 전체가 죽지 않도록 페이지 단위로 실패를 격리한다.
@@ -46,10 +56,8 @@ const REPORT_PATH = 'crawl-report.json';
       // <a href> 정적 스캔 + auditPage가 실제로 클릭해보다가 발견한 링크(SPA의 onClick 라우팅처럼
       // href가 없는 경우도 포함) 둘 다 합친다.
       const hrefs = await page.$$eval('a[href]', els => els.map(e => e.getAttribute('href'))).catch(() => []);
-      const candidateLinks = new Set([...extractInternalLinks(hrefs, url, siteHost), ...result.discoveredLinks]);
-      for (const link of candidateLinks) {
-        if (!visited.has(link) && !queue.includes(link)) queue.push(link);
-      }
+      for (const link of extractInternalLinks(hrefs, url, siteHost)) enqueue(link);
+      for (const link of result.discoveredLinks) enqueue(link);
     }
   } finally {
     // 중간에 처리 못한 예외가 나도 그때까지의 결과는 항상 저장/출력한다.

@@ -40,16 +40,17 @@ test('URL 파싱에 실패하는 href는 무시하고 나머지는 계속 처리
   expect([...links]).toEqual(['https://example.com/valid']);
 });
 
-test('trailing slash 유무만 다른 링크는 같은 페이지로 합쳐진다', () => {
+test('trailing slash는 원본 그대로 보존한다 (navigate에 쓰이므로 함부로 지우면 안 됨)', () => {
+  // the-internet.herokuapp.com/add_remove_elements/ 처럼 trailing slash가 있어야만 200이 나오고
+  // 없으면 404가 나는 페이지가 실제로 있었다(라이브 테스트로 발견). extractInternalLinks가 리턴하는 값은
+  // 그대로 page.goto에 쓰이므로 여기서 절대 정규화하면 안 되고, 중복 제거는 normalizeUrl을 키로 써서
+  // 호출하는 쪽(crawler.js)이 담당한다.
   const hrefs = ['/add_remove_elements', '/add_remove_elements/'];
   const links = extractInternalLinks(hrefs, baseUrl, siteHost);
-  expect([...links]).toEqual(['https://example.com/add_remove_elements']);
-});
-
-test('쿼리스트링 순서만 다른 링크도 같은 페이지로 합쳐진다', () => {
-  const hrefs = ['/search?a=1&b=2', '/search?b=2&a=1'];
-  const links = extractInternalLinks(hrefs, baseUrl, siteHost);
-  expect([...links]).toEqual(['https://example.com/search?a=1&b=2']);
+  expect([...links].sort()).toEqual([
+    'https://example.com/add_remove_elements',
+    'https://example.com/add_remove_elements/',
+  ]);
 });
 
 test.describe('normalizeUrl', () => {
@@ -63,5 +64,13 @@ test.describe('normalizeUrl', () => {
 
   test('일반 경로의 trailing slash를 제거한다', () => {
     expect(normalizeUrl('https://example.com/page/')).toBe('https://example.com/page');
+  });
+
+  test('trailing slash 유무만 다른 URL은 같은 키로 정규화된다 (중복 판정용)', () => {
+    expect(normalizeUrl('https://example.com/page')).toBe(normalizeUrl('https://example.com/page/'));
+  });
+
+  test('쿼리스트링 순서만 다른 URL은 같은 키로 정규화된다 (중복 판정용)', () => {
+    expect(normalizeUrl('https://example.com/search?a=1&b=2')).toBe(normalizeUrl('https://example.com/search?b=2&a=1'));
   });
 });

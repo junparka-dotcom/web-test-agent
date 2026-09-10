@@ -3,7 +3,7 @@
 // crawler.js가 여러 페이지에 대해 이 함수를 반복 호출해서 사이트 전체를 점검한다.
 const Anthropic = require('@anthropic-ai/sdk');
 const readline = require('readline');
-const { normalizeUrl } = require('./linkUtils');
+const { stripHash } = require('./linkUtils');
 
 // API 키가 없으면 new Anthropic()이 즉시 예외를 던지는데, 이 모듈을 그냥 require만 해도
 // (예: 순수 로직 유닛 테스트에서) 실행되면 안 되므로 실제로 API를 호출하는 시점까지 생성을 미룬다.
@@ -271,7 +271,7 @@ async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
             // 엉뚱한 페이지 것으로 섞이지 않는다 (사이트 전체 탐색은 crawler.js가 별도로 담당).
             const movedToUrl = page.url();
             if (new URL(movedToUrl).hostname === siteHost) {
-              discoveredLinks.add(normalizeUrl(movedToUrl));
+              discoveredLinks.add(stripHash(movedToUrl));
             }
             await page.goto(startUrl);
             resultText = `${movedToUrl} 로 이동됨을 확인 → 정상 작동, 원래 페이지로 복귀함`;
