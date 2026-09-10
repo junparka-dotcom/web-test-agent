@@ -11,6 +11,11 @@ function waitForUser(message) {
   return new Promise(resolve => rl.question(message, () => { rl.close(); resolve(); }));
 }
 
+function askForInput(promptText) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise(resolve => rl.question(promptText, answer => { rl.close(); resolve(answer); }));
+}
+
 function isLogoutRef(snapshotText, ref) {
   const line = snapshotText.split('\n').find(l => l.includes(`[ref=${ref}]`));
   return line ? /log\s?out|sign\s?out|로그아웃/i.test(line) : false;
@@ -30,6 +35,28 @@ async function gotoWithRetry(page, url, attempts = 3) {
       if (!isNavigationRace || i === attempts) throw err;
       await page.waitForTimeout(300);
     }
+  }
+}
+
+// HTTP Basic Auth로 막힌 페이지는 DOM이 뜨기도 전에 goto 자체가 실패해서(net::ERR_INVALID_AUTH_CREDENTIALS),
+// 폼 로그인처럼 AI가 request_human_help를 호출할 기회조차 없다. 그래서 같은 원칙(자격 증명은 코드에
+// 하드코딩하지 않고 사람에게 직접 물어봄)을 여기서도 지키되, 사람에게 직접 입력받아 Authorization 헤더로 재시도한다.
+// 반환값: 이번 페이지를 열기 위해 Basic Auth 헤더를 사용했는지 여부 (사용했다면 호출한 쪽이 끝나고 정리해야 함)
+async function ensureReachable(page, url) {
+  try {
+    await gotoWithRetry(page, url);
+    return false;
+  } catch (err) {
+    if (!/ERR_INVALID_AUTH_CREDENTIALS/.test(err.message)) throw err;
+
+    console.log(`\n🙋 HTTP Basic Auth 벽 감지: ${url}`);
+    console.log('   (규칙 1과 같은 원칙 — 자격 증명을 코드에 넣지 않고 사람에게 직접 물어봄)');
+    const username = await askForInput('   Username: ');
+    const password = await askForInput('   Password: ');
+    const basicAuth = Buffer.from(`${username}:${password}`).toString('base64');
+    await page.setExtraHTTPHeaders({ Authorization: `Basic ${basicAuth}` });
+    await gotoWithRetry(page, url);
+    return true;
   }
 }
 
@@ -97,145 +124,152 @@ function formatFindings(findings) {
 // siteHost: 외부 링크 판별 기준이 되는 원래 사이트 호스트
 // maxSteps: 이 페이지 하나에 허용할 최대 step 수
 async function auditPage({ page, url, siteHost, maxSteps = 25 }) {
-  await gotoWithRetry(page, url);
-  const startUrl = page.url(); // page.goto가 리다이렉트할 수 있어서, 이후 "원래 페이지로 복귀" 기준은 실제 로드된 URL로 고정
+  const usedBasicAuth = await ensureReachable(page, url);
 
-  let currentSnapshot = await page.ariaSnapshot({ mode: 'ai' });
-  let messages = [
-    { role: 'user', content: `현재 페이지 접근성 트리:\n${currentSnapshot}\n\n임무: ${goal}` }
-  ];
-  const findings = [];
+  try {
+    const startUrl = page.url(); // page.goto가 리다이렉트할 수 있어서, 이후 "원래 페이지로 복귀" 기준은 실제 로드된 URL로 고정
 
-  outer:
-  for (let step = 1; step <= maxSteps; step++) {
-    const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1000,
-      tools,
-      messages
-    });
+    let currentSnapshot = await page.ariaSnapshot({ mode: 'ai' });
+    let messages = [
+      { role: 'user', content: `현재 페이지 접근성 트리:\n${currentSnapshot}\n\n임무: ${goal}` }
+    ];
+    const findings = [];
 
-    messages.push({ role: 'assistant', content: response.content });
+    outer:
+    for (let step = 1; step <= maxSteps; step++) {
+      const response = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1000,
+        tools,
+        messages
+      });
 
-    const toolUses = response.content.filter(b => b.type === 'tool_use');
-    if (toolUses.length === 0) {
-      console.log(`[${step}] tool 호출 없음`);
-      break;
-    }
+      messages.push({ role: 'assistant', content: response.content });
 
-    const toolResults = [];
-    let shouldEnd = false;
-    let endReason = null; // 'logout' | 'finish'
-    let finishSummary = null;
+      const toolUses = response.content.filter(b => b.type === 'tool_use');
+      if (toolUses.length === 0) {
+        console.log(`[${step}] tool 호출 없음`);
+        break;
+      }
 
-    for (const toolUse of toolUses) {
-      console.log(`[${step}] AI 결정:`, toolUse.name, toolUse.input);
-      let resultText = '완료';
+      const toolResults = [];
+      let shouldEnd = false;
+      let endReason = null; // 'logout' | 'finish'
+      let finishSummary = null;
 
-      try {
-      if (toolUse.name === 'fill_element') {
-        await page.locator(`aria-ref=${toolUse.input.ref}`).fill(toolUse.input.text);
-        resultText = '입력 완료';
+      for (const toolUse of toolUses) {
+        console.log(`[${step}] AI 결정:`, toolUse.name, toolUse.input);
+        let resultText = '완료';
 
-      } else if (toolUse.name === 'select_option') {
-        await page.locator(`aria-ref=${toolUse.input.ref}`).selectOption({ label: toolUse.input.option });
-        resultText = `옵션 "${toolUse.input.option}" 선택 완료`;
+        try {
+        if (toolUse.name === 'fill_element') {
+          await page.locator(`aria-ref=${toolUse.input.ref}`).fill(toolUse.input.text);
+          resultText = '입력 완료';
 
-      } else if (toolUse.name === 'click_element') {
-        const popupPromise = page.context().waitForEvent('page', { timeout: 2000 }).catch(() => null);
-        const isLogout = isLogoutRef(currentSnapshot, toolUse.input.ref);
+        } else if (toolUse.name === 'select_option') {
+          await page.locator(`aria-ref=${toolUse.input.ref}`).selectOption({ label: toolUse.input.option });
+          resultText = `옵션 "${toolUse.input.option}" 선택 완료`;
 
-        await page.locator(`aria-ref=${toolUse.input.ref}`).click();
-        await page.waitForTimeout(500);
+        } else if (toolUse.name === 'click_element') {
+          const popupPromise = page.context().waitForEvent('page', { timeout: 2000 }).catch(() => null);
+          const isLogout = isLogoutRef(currentSnapshot, toolUse.input.ref);
 
-        const popup = await popupPromise;
+          await page.locator(`aria-ref=${toolUse.input.ref}`).click();
+          await page.waitForTimeout(500);
 
-        if (isLogout) {
-          // 안전망: 로그아웃은 "원래 페이지로 복귀" 로직보다 먼저, 최우선으로 처리한다.
-          // 복귀 로직이 먼저 실행되면 로그아웃 직후 페이지가 아니라 startUrl로 되돌아간 뒤 검증하게 되어
-          // 오탐(로그인 폼이 없다고 잘못 판단)이 생기기 때문에, 여기서 AI 판단과 무관하게 바로 검증하고 종료한다.
-          if (popup) await popup.close();
-          const passwordFieldCount = await page.locator('input[type="password"]').count();
-          const backToSameHost = new URL(page.url()).hostname === siteHost;
-          const loggedOutLikely = passwordFieldCount > 0 && backToSameHost;
+          const popup = await popupPromise;
 
-          findings.push({
-            target: 'Logout',
-            status: loggedOutLikely ? 'ok' : 'issue',
-            detail: loggedOutLikely
-              ? '클릭 후 로그인 폼(비밀번호 입력창)이 다시 나타남 → 세션이 정상적으로 종료된 것으로 판단'
-              : '클릭 후에도 로그인 폼이 감지되지 않음 → 로그아웃이 실제로 동작했는지 수동 확인 필요'
-          });
-          resultText = '로그아웃 감지, 코드가 자동으로 검증 후 종료함';
+          if (isLogout) {
+            // 안전망: 로그아웃은 "원래 페이지로 복귀" 로직보다 먼저, 최우선으로 처리한다.
+            // 복귀 로직이 먼저 실행되면 로그아웃 직후 페이지가 아니라 startUrl로 되돌아간 뒤 검증하게 되어
+            // 오탐(로그인 폼이 없다고 잘못 판단)이 생기기 때문에, 여기서 AI 판단과 무관하게 바로 검증하고 종료한다.
+            if (popup) await popup.close();
+            const passwordFieldCount = await page.locator('input[type="password"]').count();
+            const backToSameHost = new URL(page.url()).hostname === siteHost;
+            const loggedOutLikely = passwordFieldCount > 0 && backToSameHost;
+
+            findings.push({
+              target: 'Logout',
+              status: loggedOutLikely ? 'ok' : 'issue',
+              detail: loggedOutLikely
+                ? '클릭 후 로그인 폼(비밀번호 입력창)이 다시 나타남 → 세션이 정상적으로 종료된 것으로 판단'
+                : '클릭 후에도 로그인 폼이 감지되지 않음 → 로그아웃이 실제로 동작했는지 수동 확인 필요'
+            });
+            resultText = '로그아웃 감지, 코드가 자동으로 검증 후 종료함';
+            shouldEnd = true;
+            endReason = 'logout';
+
+          } else if (popup) {
+            const popupUrl = popup.url();
+            await popup.close();
+            resultText = `새 탭으로 ${popupUrl} 가 열림을 확인 → 정상 작동, 새 탭은 닫고 원래 페이지 유지함`;
+
+          } else if (page.url() !== startUrl) {
+            // 내부 링크든 외부 링크든, 클릭이 다른 페이지로 이동시켰다면 "이동됨"을 확인한 것으로 기록하고
+            // 원래 점검 중이던 페이지로 되돌아온다. 그래야 이 페이지에서 발견되는 링크 목록과 남은 step이
+            // 엉뚱한 페이지 것으로 섞이지 않는다 (사이트 전체 탐색은 crawler.js가 별도로 담당).
+            const movedToUrl = page.url();
+            await page.goto(startUrl);
+            resultText = `${movedToUrl} 로 이동됨을 확인 → 정상 작동, 원래 페이지로 복귀함`;
+
+          } else {
+            resultText = `클릭 완료, 현재 페이지: ${page.url()}`;
+          }
+
+        } else if (toolUse.name === 'request_human_help') {
+          console.log('\n🙋', toolUse.input.blocker, '-', toolUse.input.request);
+          await waitForUser('\n처리 후 Enter...\n');
+          resultText = '사용자가 처리 완료';
+
+        } else if (toolUse.name === 'report_finding') {
+          findings.push({ target: toolUse.input.target, status: toolUse.input.status, detail: toolUse.input.detail });
+          resultText = '기록됨';
+
+        } else if (toolUse.name === 'finish') {
+          finishSummary = toolUse.input.summary;
+          console.log('\n✅ 점검 종료 요약:\n', finishSummary);
+          resultText = '점검 종료';
           shouldEnd = true;
-          endReason = 'logout';
-
-        } else if (popup) {
-          const popupUrl = popup.url();
-          await popup.close();
-          resultText = `새 탭으로 ${popupUrl} 가 열림을 확인 → 정상 작동, 새 탭은 닫고 원래 페이지 유지함`;
-
-        } else if (page.url() !== startUrl) {
-          // 내부 링크든 외부 링크든, 클릭이 다른 페이지로 이동시켰다면 "이동됨"을 확인한 것으로 기록하고
-          // 원래 점검 중이던 페이지로 되돌아온다. 그래야 이 페이지에서 발견되는 링크 목록과 남은 step이
-          // 엉뚱한 페이지 것으로 섞이지 않는다 (사이트 전체 탐색은 crawler.js가 별도로 담당).
-          const movedToUrl = page.url();
-          await page.goto(startUrl);
-          resultText = `${movedToUrl} 로 이동됨을 확인 → 정상 작동, 원래 페이지로 복귀함`;
-
-        } else {
-          resultText = `클릭 완료, 현재 페이지: ${page.url()}`;
+          endReason = 'finish';
+        }
+        } catch (err) {
+          // 행동 하나가 실패해도(잘못된 요소 타입, detach된 요소, 타임아웃 등) 페이지 점검 전체를 죽이지 않고
+          // 실패 사유를 다음 턴 AI에게 알려줘서 다른 방식으로 재시도하거나 issue로 기록하고 넘어가게 한다.
+          resultText = `실행 실패: ${err.message.split('\n')[0]}`;
+          console.log(`  ⚠️ ${resultText}`);
         }
 
-      } else if (toolUse.name === 'request_human_help') {
-        console.log('\n🙋', toolUse.input.blocker, '-', toolUse.input.request);
-        await waitForUser('\n처리 후 Enter...\n');
-        resultText = '사용자가 처리 완료';
-
-      } else if (toolUse.name === 'report_finding') {
-        findings.push({ target: toolUse.input.target, status: toolUse.input.status, detail: toolUse.input.detail });
-        resultText = '기록됨';
-
-      } else if (toolUse.name === 'finish') {
-        finishSummary = toolUse.input.summary;
-        console.log('\n✅ 점검 종료 요약:\n', finishSummary);
-        resultText = '점검 종료';
-        shouldEnd = true;
-        endReason = 'finish';
-      }
-      } catch (err) {
-        // 행동 하나가 실패해도(잘못된 요소 타입, detach된 요소, 타임아웃 등) 페이지 점검 전체를 죽이지 않고
-        // 실패 사유를 다음 턴 AI에게 알려줘서 다른 방식으로 재시도하거나 issue로 기록하고 넘어가게 한다.
-        resultText = `실행 실패: ${err.message.split('\n')[0]}`;
-        console.log(`  ⚠️ ${resultText}`);
+        toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: resultText });
       }
 
-      toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: resultText });
+      await page.waitForTimeout(1000);
+
+      if (shouldEnd) {
+        if (endReason === 'logout') {
+          finishSummary = formatFindings(findings);
+          console.log('\n✅ 점검 종료 요약 (로그아웃 감지로 코드가 자동 종료):\n', finishSummary);
+        }
+        console.log('🔒 종료 조건 도달');
+        return { findings, summary: finishSummary, finalUrl: page.url() };
+      }
+
+      currentSnapshot = await page.ariaSnapshot({ mode: 'ai' });
+      messages.push({
+        role: 'user',
+        content: [...toolResults, { type: 'text', text: `현재 화면:\n${currentSnapshot}` }]
+      });
     }
 
-    await page.waitForTimeout(1000);
-
-    if (shouldEnd) {
-      if (endReason === 'logout') {
-        finishSummary = formatFindings(findings);
-        console.log('\n✅ 점검 종료 요약 (로그아웃 감지로 코드가 자동 종료):\n', finishSummary);
-      }
-      console.log('🔒 종료 조건 도달');
-      return { findings, summary: finishSummary, finalUrl: page.url() };
-    }
-
-    currentSnapshot = await page.ariaSnapshot({ mode: 'ai' });
-    messages.push({
-      role: 'user',
-      content: [...toolResults, { type: 'text', text: `현재 화면:\n${currentSnapshot}` }]
-    });
+    // finish/logout 없이 step 예산을 다 쓰거나 tool 호출이 끊긴 경우: 지금까지 기록만이라도 요약해서 반환
+    const fallbackSummary = findings.length > 0
+      ? `(step 예산 소진 — finish 호출 전 중단됨)\n${formatFindings(findings)}`
+      : null;
+    return { findings, summary: fallbackSummary, finalUrl: page.url() };
+  } finally {
+    // Basic Auth 헤더는 이 페이지에만 필요한 것이므로, 다른 페이지(특히 외부 사이트)로
+    // 새어나가지 않도록 점검이 끝나면 항상 정리한다.
+    if (usedBasicAuth) await page.setExtraHTTPHeaders({}).catch(() => {});
   }
-
-  // finish/logout 없이 step 예산을 다 쓰거나 tool 호출이 끊긴 경우: 지금까지 기록만이라도 요약해서 반환
-  const fallbackSummary = findings.length > 0
-    ? `(step 예산 소진 — finish 호출 전 중단됨)\n${formatFindings(findings)}`
-    : null;
-  return { findings, summary: fallbackSummary, finalUrl: page.url() };
 }
 
 module.exports = { auditPage, isLogoutRef, gotoWithRetry, tools, goal };
