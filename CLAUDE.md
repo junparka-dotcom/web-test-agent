@@ -71,6 +71,11 @@ AI 기반 웹/앱 개발환경 프로젝트의 차별화 기능 실험. 코드�
   양쪽을 리다이렉트해줄 거라는 가정이 틀렸음). 그래서 지금은 `extractInternalLinks`/`discoveredLinks`가
   돌려주는 원본 URL(해시만 제거, slash는 그대로)로 항상 navigate하고, `crawler.js`의 `enqueue()`가
   `normalizeUrl()`을 큐 중복 판정용 키로만 사용해서 `seenKeys` Set에 저장한다 — 큐 자체에는 원본이 들어감.
+- **리포트는 기계용(JSON)과 사람용(Markdown)을 같이 남김**: `report.js`의 `formatReportMarkdown()`이
+  findings 배열을 받아서 상단에 전체 요약(점검 페이지 수, 실패 수, findings/이슈 건수), 이슈만 모은
+  섹션, 페이지별 상세를 마크다운으로 정리한다. `agent.js`/`crawler.js` 둘 다 이 함수를 재사용해서
+  `*-report.json`(원본 데이터)과 `*-report.md`(읽기용)를 같이 저장한다. 둘 다 실행할 때마다 새로
+  생성되는 산출물이라 커밋하지 않음(`.gitignore`).
 - **API를 직접 호출하는 코드와 순수 로직은 분리해서, 순수 로직만 API 키 없이 테스트 가능해야 함**:
   `pageAuditor.js`가 모듈 로드 시점에 `new Anthropic()`을 실행하면, API 키가 없는 환경에서는
   `require`만 해도 죽어버려서 `isLogoutRef`/`formatFindings`/`gotoWithRetry` 같은 순수 함수조차
@@ -88,12 +93,14 @@ AI 기반 웹/앱 개발환경 프로젝트의 차별화 기능 실험. 코드�
 - `agent.js` — 단일 페이지(현재는 `/secure`) 점검용 얇은 진입점, `auditPage`를 한 번 호출
 - `crawler.js` — 사이트 전체를 큐 기반으로 도는 크롤러. `auditPage`를 페이지마다 반복 호출하고
   페이지 단위로 실패를 격리, 결과를 `crawl-report.json`에 저장
-- `linkUtils.js` — 크롤러가 쓰는 내부 링크 추출 순수 함수 (`extractInternalLinks`)
+- `linkUtils.js` — 크롤러가 쓰는 내부 링크 추출/URL 정규화 순수 함수 (`extractInternalLinks`, `normalizeUrl`)
+- `report.js` — findings 배열을 사람이 읽기 좋은 마크다운으로 정리하는 순수 함수 (`formatReportMarkdown`)
 - `explore.js` — 초기 실험용 스크립트 (접근성 트리 추출 테스트)
 - `check-env.js` — .env 로딩 확인용
 - `tests/unit/` — **API를 호출하지 않는** 순수 로직 테스트 (`npm run test:unit`으로 실행, 비용 없음)
 - `tests/example.spec.js` — Playwright 설치 확인용 플레이스홀더 (에이전트 로직과 무관)
-- `crawl-report.json` — 크롤러 실행 결과물 (매 실행마다 새로 생성됨, `.gitignore`에 등록, 소스 아님)
+- `crawl-report.json` / `crawl-report.md` / `agent-report.json` / `agent-report.md` — 실행 결과물
+  (매 실행마다 새로 생성됨, `.gitignore`에 등록, 소스 아님)
 - `.env` — ANTHROPIC_API_KEY 보관 (.gitignore에 등록됨, 커밋 금지)
 
 ## 현재 상태 / 다음 작업
@@ -105,7 +112,8 @@ AI 기반 웹/앱 개발환경 프로젝트의 차별화 기능 실험. 코드�
 - HTTP Basic Auth 벽 처리 (사람에게 직접 자격증명 입력받음)
 - 크롤러 레이어 (`crawler.js`) — 내부 링크 큐잉(정적 `<a href>` 스캔 + 클릭으로 발견한 SPA 라우팅 링크),
   페이지 단위 실패 격리, goto 재시도
-- API 호출 없는 순수 로직 유닛 테스트 (`tests/unit/`, 18개)
+- API 호출 없는 순수 로직 유닛 테스트 (`tests/unit/`, 30개)
+- 사람이 읽기 좋은 마크다운 리포트 (`report.js`) — 전체 요약 + 이슈만 모은 섹션 + 페이지별 상세
 
 **남은 것**
 - **라이브 통합 실행 검증**: Basic Auth 입력 흐름, dialog 처리, hover/drag/upload를 실제 API로 한 번에

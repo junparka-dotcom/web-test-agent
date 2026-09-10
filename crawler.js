@@ -6,12 +6,15 @@ const fs = require('fs');
 const { chromium } = require('@playwright/test');
 const { auditPage } = require('./pageAuditor');
 const { extractInternalLinks, normalizeUrl } = require('./linkUtils');
+const { summarizeReport, formatReportMarkdown } = require('./report');
 
 const entryUrl = 'https://the-internet.herokuapp.com/';
 const siteHost = new URL(entryUrl).hostname;
 const MAX_PAGES = 10;          // 한 번 크롤링에서 점검할 최대 페이지 수 (비용/시간 제한)
 const MAX_STEPS_PER_PAGE = 30; // 페이지 한 장당 허용할 최대 step 수 (15는 부족해서 finish 호출 전에 예산 소진됨)
-const REPORT_PATH = 'crawl-report.json';
+const REPORT_JSON_PATH = 'crawl-report.json';
+const REPORT_MD_PATH = 'crawl-report.md';
+const startedAt = new Date().toISOString();
 
 (async () => {
   const browser = await chromium.launch({ headless: false });
@@ -61,15 +64,24 @@ const REPORT_PATH = 'crawl-report.json';
     }
   } finally {
     // 중간에 처리 못한 예외가 나도 그때까지의 결과는 항상 저장/출력한다.
+    const summary = summarizeReport(report);
     console.log('\n\n========== 전체 사이트 점검 결과 ==========');
+    console.log(`점검한 페이지: ${summary.totalPages}개 (실패 ${summary.failedPages}개) / findings ${summary.totalFindings}건 (이슈 ${summary.totalIssues}건)`);
+    if (summary.issues.length > 0) {
+      console.log('\n⚠ 발견된 이슈:');
+      for (const issue of summary.issues) {
+        console.log(`  - [${issue.url}] ${issue.target}: ${issue.detail}`);
+      }
+    }
     for (const r of report) {
       const issueCount = r.findings.filter(f => f.status === 'issue').length;
       console.log(`\n[${r.url}] (issue ${issueCount}건)`);
       console.log(r.summary ?? '(기록된 점검 결과 없음)');
     }
 
-    fs.writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2), 'utf-8');
-    console.log(`\n📄 상세 결과 저장: ${REPORT_PATH}`);
+    fs.writeFileSync(REPORT_JSON_PATH, JSON.stringify(report, null, 2), 'utf-8');
+    fs.writeFileSync(REPORT_MD_PATH, formatReportMarkdown(report, { entryUrl, startedAt }), 'utf-8');
+    console.log(`\n📄 상세 결과 저장: ${REPORT_JSON_PATH} (데이터), ${REPORT_MD_PATH} (읽기용)`);
 
     await page.waitForTimeout(1500);
     await browser.close();
