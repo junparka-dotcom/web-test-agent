@@ -1,7 +1,7 @@
 // @ts-check
 // API를 호출하지 않는 순수 로직 테스트. 크레딧 걱정 없이 언제든 돌려도 된다.
 import { test, expect } from '@playwright/test';
-import { extractInternalLinks } from '../../linkUtils.js';
+import { extractInternalLinks, normalizeUrl } from '../../linkUtils.js';
 
 const siteHost = 'example.com';
 const baseUrl = 'https://example.com/start';
@@ -38,4 +38,30 @@ test('URL 파싱에 실패하는 href는 무시하고 나머지는 계속 처리
   const hrefs = ['http://[not-closed', '/valid'];
   const links = extractInternalLinks(hrefs, baseUrl, siteHost);
   expect([...links]).toEqual(['https://example.com/valid']);
+});
+
+test('trailing slash 유무만 다른 링크는 같은 페이지로 합쳐진다', () => {
+  const hrefs = ['/add_remove_elements', '/add_remove_elements/'];
+  const links = extractInternalLinks(hrefs, baseUrl, siteHost);
+  expect([...links]).toEqual(['https://example.com/add_remove_elements']);
+});
+
+test('쿼리스트링 순서만 다른 링크도 같은 페이지로 합쳐진다', () => {
+  const hrefs = ['/search?a=1&b=2', '/search?b=2&a=1'];
+  const links = extractInternalLinks(hrefs, baseUrl, siteHost);
+  expect([...links]).toEqual(['https://example.com/search?a=1&b=2']);
+});
+
+test.describe('normalizeUrl', () => {
+  test('루트 경로("/")는 슬래시를 제거하지 않는다', () => {
+    expect(normalizeUrl('https://example.com/')).toBe('https://example.com/');
+  });
+
+  test('해시를 제거한다', () => {
+    expect(normalizeUrl('https://example.com/page#section')).toBe('https://example.com/page');
+  });
+
+  test('일반 경로의 trailing slash를 제거한다', () => {
+    expect(normalizeUrl('https://example.com/page/')).toBe('https://example.com/page');
+  });
 });
